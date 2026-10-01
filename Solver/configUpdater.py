@@ -4,6 +4,8 @@ with open ("/boot/firmware/config.txt") as h:
             line = '#'+line
         elif "max_framebuffers=2" in line:
             line = '#'+line
+        elif "otg_mode=1" in line:
+            line = '#'+line
         with open("newconfig.txt","a") as j:
             j.write(line)
             
