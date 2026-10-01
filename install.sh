@@ -84,13 +84,11 @@ sudo systemctl restart smbd
 cd $HOME
 echo " "
 echo "*****************************************************************************"
-echo "installing olive-solve"
+echo "installing tetra and olive-solve"
 echo "*****************************************************************************"
 
+venv-efinder/bin/python venv-efinder/bin/pip install Solver/tetra3-0.1.0-cp311-cp311-manylinux_2_35_aarch64.whl
 venv-efinder/bin/python venv-efinder/bin/pip install Solver/olive_solve-0.1.0-cp38-abi3-manylinux_2_34_aarch64.whl
-
-
-
 
 echo " "
 echo "*****************************************************************************"
