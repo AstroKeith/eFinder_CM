@@ -1,13 +1,13 @@
 # eFinder CM (aka Nexus eFinder Pro)
 
-<img width="1874" height="2326" alt="IMG_7918" src="https://github.com/user-attachments/assets/8701e1e7-83ab-4ffc-a69f-7d29d30fc9a1" />
-
 ## Basics
 
 eFinder CM is a digital finder for astronomical telescopes, utilising plate-solving to improve pointing accuracy, and an IMU to estimate telescope position in-between plate-solves.
 The DIY versions are, 
 - Full Version, functionally the same as the commercially available device (AstroDevices).
 - Minimal Version, with no UART board it has no ServoCat/SkyTracker support.
+
+<img width="1874" height="2326" alt="IMG_7918" src="https://github.com/user-attachments/assets/8701e1e7-83ab-4ffc-a69f-7d29d30fc9a1" />
 
 Requires:
 
