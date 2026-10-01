@@ -3,16 +3,17 @@
 echo "eFinder CM install on Pi CM4"
 echo " "
 
-echo "Nexus usb via CM4 serial_gadget as device on usb"
+echo "Nexus usb via CP230x uart and Aux usb host port"
 sudo tee -a /boot/firmware/config.txt > /dev/null <<EOT
 arm_freq=600
 dtoverlay=imx477,cam0
-dtoverlay=dwc2,dr_mode=peripheral
+dtoverlay=dwc2,dr_mode=host
+dtoverlay=uart3
+enable_uart=1
 dtoverlay=disable-bt
 dtoverlay=i2c-gpio,i2c_gpio_sda=16,i2c_gpio_scl=20,bus=3
 dtparam=act_led_trigger=none
 dtparam=pwr_led_trigger=none
-enable_uart=1
 EOT
 
 echo "*****************************************************************************"
