@@ -24,7 +24,7 @@ Requires:
 Full details at [
 ](https://astrokeith.com/equipment/efinder)https://astrokeith.com/equipment/efinder
 
-The repo includes a pdf describing how to prepare a complete working micro sdCard for the Pi Zero 2W
+The repo includes a pdf describing how to prepare a complete working micro sdCard for the Pi CM4
 
 ## Compatibility
 
