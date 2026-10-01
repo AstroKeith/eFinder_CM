@@ -1,4 +1,4 @@
-# eFinder cli (aka Nexus eFinder)
+# eFinder CM (aka Nexus eFinder Pro)
 
 <img width="1874" height="2326" alt="IMG_7918" src="https://github.com/user-attachments/assets/8701e1e7-83ab-4ffc-a69f-7d29d30fc9a1" />
 
