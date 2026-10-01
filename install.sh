@@ -2,37 +2,17 @@
 
 echo "eFinder cli install on Pi CM4"
 echo " "
-case $1 in
-    cdc)
-        echo "Nexus usb via CM4 serial_gadget as device on usb"
-        sudo tee -a /boot/firmware/config.txt > /dev/null <<EOT
-        dtoverlay=dwc2,dr_mode=peripheral
-        dtoverlay=disable-bt
-        dtoverlay=i2c-gpio,i2c_gpio_sda=16,i2c_gpio_scl=20,bus=3
-        dtparam=act_led_trigger=none
-        dtparam=pwr_led_trigger=none
-        enable_uart=1
-        EOT
-        ;;
-    cp)
-        echo "Nexus usb via CP2303 UART"
-        sudo tee -a /boot/firmware/config.txt > /dev/null <<EOT
-        arm_freq=600
-        dtoverlay=imx477,cam0
-        dtoverlay=dwc2,dr_mode=host
-        dtoverlay=uart3
-        enable_uart=1
-        dtoverlay=disable-bt
-        dtoverlay=i2c-gpio,i2c_gpio_sda=16,i2c_gpio_scl=20,bus=3
-        dtparam=act_led_trigger=none
-        dtparam=pwr_led_trigger=none
-        EOT
-        ;;
-    *)
-        echo "Please include the install arg - cdc or cp eg './install.sh arg'" >&2
-        exit 1
-        ;;
-esac
+
+echo "Nexus usb via CM4 serial_gadget as device on usb"
+sudo tee -a /boot/firmware/config.txt > /dev/null <<EOT
+dtoverlay=dwc2,dr_mode=peripheral
+dtoverlay=disable-bt
+dtoverlay=i2c-gpio,i2c_gpio_sda=16,i2c_gpio_scl=20,bus=3
+dtparam=act_led_trigger=none
+dtparam=pwr_led_trigger=none
+enable_uart=1
+EOT
+
 echo "*****************************************************************************"
 echo "Updating Pi OS & packages"
 echo "*****************************************************************************"
