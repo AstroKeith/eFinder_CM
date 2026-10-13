@@ -34,6 +34,7 @@ sudo apt install -y git
 sudo apt install -y python3-smbus
 sudo apt install -y python3-picamera2
 sudo apt install -y python3-scipy
+sudo apt install -y python3-skyfield
 
 HOME=/home/efinder
 cd $HOME
