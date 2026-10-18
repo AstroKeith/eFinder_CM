@@ -36,12 +36,10 @@ switch = pigpio.pi()
 switch.set_mode(17, pigpio.INPUT)
 switch.set_pull_up_down(17, pigpio.PUD_UP)
 
-global radec
-
 from pathlib import Path
 home_path = str(Path.home())
 
-version = "2.4"
+version = "2.6"
 
 print ('eFinder Live','Version '+ version)
 print ('Loading program')
@@ -56,7 +54,7 @@ import csv
 import re
 from io import BytesIO
 import subprocess
-if args.test:
+if args.test: # in testmode,so use Nexus DSC to generate synthetic plate-solves
     if os.path.exists("/dev/ttyGS0"):
         nexusDevice = "/dev/ttyGS0"
         nexusBaudrate = 115200
@@ -76,7 +74,7 @@ expInc = 0.1 # sets how much exposure changes when using handpad adjust (seconds
 gainInc = 5 # ditto for gain
 offset_flag = solve = hotspot = keep = lock = False
 offset_str = "0,0"
-testMode = True
+testMode = False
 rigMode = args.test # True = bench test with a synthetic solver, no sky needed
 stars = peak = '0'
 capArray = np.zeros((760,960),dtype=np.uint8)
@@ -135,24 +133,25 @@ def serveWifi(): # serve WiFi port
                         time.sleep(0.02)
                         a = pkt.split('#')
                         #print(a)
-                        try:
-                            pos = solver.get_latest_position()
-                            ra = pos["ra"]
-                            dec = pos["dec"]
-                            roll = pos["roll"]
-                            source = pos["source"]
-                            raPacket = coordinates.hh2dms(ra/15)+'#'
-                            decPacket = coordinates.dd2aligndms(dec)+'#'
-                            print(
-                                f"[Fused] Position (source: {source}): "
-                                f"RA={ra:.4f} deg, Dec={dec:.4f} deg, Roll={roll:.4f} deg"
-                            )
-                        except RuntimeError:
-                            # Throttled message when awaiting initial plate solve anchor or IMU tracking
-                            now = time.time()
-                            if now - last_await_log >= 2.0:
-                                print("[Fused] Awaiting initial position estimate from solver or IMU...")
-                                last_await_log = now
+                        if solver.get_motion_state() != "Initializing" and solver.get_calibration_status() != None:
+                            try:
+                                pos = solver.get_latest_position()
+                                ra = pos["ra"]
+                                dec = pos["dec"]
+                                roll = pos["roll"]
+                                source = pos["source"]
+                                raPacket = coordinates.hh2dms(ra/15)+'#'
+                                decPacket = coordinates.dd2aligndms(dec)+'#'
+                                print(
+                                    f"[Fused] Position (source: {source}): "
+                                    f"RA={ra:.4f} deg, Dec={dec:.4f} deg, Roll={roll:.4f} deg"
+                                )
+                            except RuntimeError:
+                                # Throttled message when awaiting initial plate solve anchor or IMU tracking
+                                now = time.time()
+                                if now - last_await_log >= 2.0:
+                                    print("[Fused] Awaiting initial position estimate from solver or IMU...")
+                                    last_await_log = now
 
                         for x in a:
                             if x != '':
@@ -669,13 +668,13 @@ solver = olive_solve.FusedSolver(db_path, imu_type="auto")
 print ('Connect SkySafari now')
 wifiloop = Thread(target=serveWifi)
 wifiloop.start()
+led.hardware_PWM(18,10,500000)
 time.sleep(0.5)
 while not lock: # wait for SkySafari to join which sets Lat, Long & Clock
     time.sleep(.2)
 print ('SkySafari connected OK')
 
 now = datetime.now(timezone.utc)
-print("Pi UTC currently set to: " + now.strftime("%Y-%m-%d %H:%M:%S"))
 
 pix_x, pix_y = dxdy2pixel(float(param["d_x"])/60, float(param["d_y"])/60)
 offset_str = ('%1.3f,%1.3f' % (float(param["d_x"])/60, float(param["d_y"])/60))
@@ -691,7 +690,7 @@ led.hardware_PWM(18,200,abs(pwmInvert - led_duty_cycle))
 
 loop = True
 a = True
-#solver.update_position(0.0,0.0,roll=0.0,timestamp=None,pointing_only=False)
+
 while True:
     if switch.read(17) == 0:
         flipWifi()
