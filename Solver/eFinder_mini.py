@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 # Program to implement an eFinder (electronic finder)
-# Copyright (C) 2026 Keith Venables.
+# Copyright (C) 2025 Keith Venables.
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -10,21 +10,31 @@
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-
 from __future__ import annotations
 import os
+import re
 import sys
 import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--test", help="Run in test mode", action="store_true")
+parser.add_argument(
+    "--solver-mode", choices=("sync", "background"), default="sync",
+    help="sync (default): each tick waits for the plate-solver, as before. "
+         "background: the plate-solver runs continuously in its own thread "
+         "so the main loop (and the LED/switch/WiFi handling) never stalls "
+         "on a slow solve. NOTE: MIN_SETTLE_S is not applied in background "
+         "mode -- see background_solver.py.",
+)
 args = parser.parse_args()
 if args.test:
     print("Running in test mode")
+if args.solver_mode == "background":
+    print("Running with the background plate-solver (--solver-mode background)")
 
 os.system('sudo pigpiod')
 
-#import math
+import math
 import socket
 from threading import Thread
 import pigpio
@@ -39,7 +49,7 @@ switch.set_pull_up_down(17, pigpio.PUD_UP)
 from pathlib import Path
 home_path = str(Path.home())
 
-version = "2.6"
+version = "3.4"
 
 print ('eFinder Live','Version '+ version)
 print ('Loading program')
@@ -49,42 +59,58 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps
 import numpy as np
 import RPICamera_Nexus_4
 import Coordinates_wifi_2
-import olive_solve
+import tetra3
 import csv
-import re
 from io import BytesIO
 import subprocess
-if args.test: # in testmode,so use Nexus DSC to generate synthetic plate-solves
+import astro_time
+from rig_plate_solve import make_rig_plate_solve
+from astro_time import ObserverLocation
+from telescope_pointing import (
+    TelescopePointingEstimator,
+    get_pointing_estimate,
+    pointing_loop_tick_nonblocking,
+)
+from background_solver import BackgroundSolver
+from bno085_interface import open_bno085_software_i2c, read_imu_sample
+from test_plate_solver import make_synthetic_plate_solve, LastSampleCache
+coordinates = Coordinates_wifi_2.Coordinates()
+
+if args.test:
     if os.path.exists("/dev/ttyGS0"):
         nexusDevice = "/dev/ttyGS0"
         nexusBaudrate = 115200
-        print ('Nexus expected on /dev/ttyGS0')
     else:
         nexusDevice = "/dev/ttyAMA3"
         nexusBaudrate = 115200
-        print ('Nexus expected on /dev/ttyAMA3')
     import Nexus_usb
     nexus = Nexus_usb.Nexus(nexusDevice,nexusBaudrate)
     nexus.setState()
-    from rig_plate_solve import true_radec_pa_from_rig as get_roll
-from astro_time import ObserverLocation, radec_to_altaz
-site = ObserverLocation(latitude_deg=51.5074, longitude_deg=-0.7, elevation_m=25.0)
+    from rig_plate_solve import make_rig_plate_solve
+
+t3 = tetra3.Tetra3("/home/efinder/Solver/t3_fov14_mag8.npz")
 
 expInc = 0.1 # sets how much exposure changes when using handpad adjust (seconds)
 gainInc = 5 # ditto for gain
-offset_flag = solve = hotspot = keep = lock = False
+offset_flag = False
 offset_str = "0,0"
-testMode = False
-rigMode = args.test # True = bench test with a synthetic solver, no sky needed
+solve = False
+testMode = args.test # True = bench test with a synthetic solver, no sky needed
 stars = peak = '0'
 capArray = np.zeros((760,960),dtype=np.uint8)
+hotspot = False
+keep = False
 solved_radec = 0,0
 fnt = ImageFont.truetype("/home/efinder/Solver/text.ttf",16)
 frame = 0
 loop = True
-db_path = "/home/efinder/Solver/t3_fov14_mag8.npz"
-cam = (960,760,50.8,13.5) 
-pwmInvert = 1000000
+lock = False
+DIAGNOSE_FREEZE = True  # True = log every plate-solve attempt and how long it took, to help diagnose occasional freezes during a slew
+MAX_RATE_DEG_S = 0.2 #float(param["MAX_RATE_DEG_S"])
+MIN_SETTLE_S = 0.4  # only used in sync mode -- see --solver-mode background's note
+BACKGROUND_SOLVER_POLL_INTERVAL_S = 0.05  # only used in --solver-mode background
+
+#ts = load.timescale()
 
 def logWrite(err):
     with open("/var/www/html/eFinderLiveLog.txt", "a") as h:
@@ -105,7 +131,7 @@ def configRecover():
         logWrite(str(error))
 
 def serveWifi(): # serve WiFi port
-    global solved_radec, addr, param, keep, frame, Lat, Long, site, solver, estimator, body_boresight, lock
+    global solved_radec, lock, addr, param, keep, frame, Lat, Long
     print ('starting wifi server')
     host = ''
     port = 4060
@@ -115,11 +141,9 @@ def serveWifi(): # serve WiFi port
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((host,port))
     s.listen(backlog)
-    raPacket = coordinates.hh2dms(0.0)+'#'
-    decPacket = coordinates.dd2aligndms(0.0)+'#'
+    raStr = decStr = ""
     timeOffset = '0'
     timeStr = '23:00:00'
-    last_await_log = 0.0
     try:
         while True:
             try:
@@ -133,26 +157,8 @@ def serveWifi(): # serve WiFi port
                         time.sleep(0.02)
                         a = pkt.split('#')
                         #print(a)
-                        if solver.get_motion_state() != "Initializing" and solver.get_calibration_status() != None:
-                            try:
-                                pos = solver.get_latest_position()
-                                ra = pos["ra"]
-                                dec = pos["dec"]
-                                roll = pos["roll"]
-                                source = pos["source"]
-                                raPacket = coordinates.hh2dms(ra/15)+'#'
-                                decPacket = coordinates.dd2aligndms(dec)+'#'
-                                print(
-                                    f"[Fused] Position (source: {source}): "
-                                    f"RA={ra:.4f} deg, Dec={dec:.4f} deg, Roll={roll:.4f} deg"
-                                )
-                            except RuntimeError:
-                                # Throttled message when awaiting initial plate solve anchor or IMU tracking
-                                now = time.time()
-                                if now - last_await_log >= 2.0:
-                                    print("[Fused] Awaiting initial position estimate from solver or IMU...")
-                                    last_await_log = now
-
+                        raPacket = coordinates.hh2dms(solved_radec[0]/15)+'#'
+                        decPacket = coordinates.dd2aligndms(solved_radec[1])+'#'
                         for x in a:
                             if x != '':
                                 #print (x)
@@ -169,8 +175,7 @@ def serveWifi(): # serve WiFi port
                                 elif x[1:3] == 'Sg':
                                     client.send(b'1')
                                     LongStr = x[3:].split('*')
-                                    loc = int(LongStr[0]) + int(LongStr[1])/60 # Longitude as decimal degrees West +ve
-                                    Long = 360.0 - loc if loc > 180.0 else -loc
+                                    Long = -(int(LongStr[0]) + int(LongStr[1])/60) # Longitude as decimal degrees West -ve
                                     param["Long"] = str(Long)
                                     save_param()
                                 elif x[1:3] == 'SG':
@@ -181,13 +186,13 @@ def serveWifi(): # serve WiFi port
                                     timeStr = x[3:]
                                 elif x[1:3] == 'SC':
                                     client.send(b'Updating Planetary Data#                              #')
+                                    print('SkySafari has connected')
+                                    print('Lat,Long',Lat,Long)
                                     print('dateSet',timeOffset,timeStr,x[3:])
                                     coordinates.dateSet(timeOffset,timeStr,x[3:])
-                                    solver.set_observer_location(Lat,Long)
-                                    imu_started = solver.start_imu()
-                                    print (f"IMU started successfully: {imu_started}")
                                     lock = True
                                     coordinates.setup_precess()
+                                    
                                 elif x[1:3] == 'RG': # set minimum exp/gain
                                     selectExp(0.1,10)
                                 elif x[1:3] == 'RC': # set med exp/gain
@@ -247,19 +252,6 @@ def dxdy2pixel(dx, dy): # converts offsets in arcseconds to pixel position
     pix_y = cam[1]/2 - dy * 3600 / cam[2]
     return (pix_x, pix_y)
 
-def parse_coordinates(d_str: str, m_str: str, s_str: str) -> Optional[float]:
-    """Parses degree/hour, minute, and second substrings into decimal degrees."""
-    try:
-        deg = int(d_str)
-        minutes = int(m_str)
-        seconds = int(s_str)
-    except ValueError:
-        return None
-
-    is_negative = deg < 0 or d_str.startswith("-")
-    val = abs(deg) + (minutes / 60.0) + (seconds / 3600.0)
-    return -val if is_negative else val
-
 def capture():
     global capArray
     hemi = 'N'
@@ -277,11 +269,11 @@ def capture():
     return capArray
 
 def solveImage(img):
-    global offset_flag, solve, eTime, firstStar, solution, cam, stars, peak, solved_radec
+    global offset_flag, solve, eTime, firstStar, solution, cam, stars, peak
     start_time = time.time()
     print ("Started solving")
     np_image = np.asarray(img, dtype=np.float32)
-    centroids = solver.get_centroids_from_image(np_image)
+    centroids = t3.get_centroids_from_image(np_image)
     print ('centroids',len(centroids),'   peak',np.max(np_image))
     if len(centroids) < 15:
         print ("Bad image","only "+ str(len(centroids))," centroids")
@@ -289,10 +281,10 @@ def solveImage(img):
         if keep:
             txt = "Bad image - " + str(len(centroids)) + " stars" + "    Exp = "+str(param['Exposure'])+ 's.   Gain = ' + str(param["Gain"])
             saveImage(img,txt)
-        return
+        return (0,0,0,solve)
     stars = ('%4d' % (len(centroids)))
     peak = ('%3d' % (np.max(np_image)))
-    solution = solver.solve_from_centroids(
+    solution = t3.solve_from_centroids(
         centroids,
         (760,960),
         fov_estimate=13.4, 
@@ -310,7 +302,7 @@ def solveImage(img):
             txt = "Not Solved - " + stars + " stars" + "    Exp = "+str(param['Exposure'])+ 's.   Gain = ' + str(param["Gain"])
             saveImage(img,txt)
         solve = False
-        return
+        return (0,0,0,solve)
     firstStar = centroids[0]
     ra = solution['RA_target'][0]
     dec = solution['Dec_target'][0]
@@ -319,7 +311,7 @@ def solveImage(img):
     if keep:
         txt = "Peak = "+ str(np.max(np_image)) + "   Stars = "+ str(len(centroids)) + "    Exp = "+str(param['Exposure'])+ 's.   Gain = ' + str(param["Gain"])
         saveImage(img,txt)
-    solved_radec = ra,dec
+    #solved_radec = ra,dec
     print ('JNow',coordinates.hh2dms(solved_radec[0]/15),coordinates.dd2aligndms(solved_radec[1]))
     solve = True
     return (ra,dec,solution['Roll'],solve)
@@ -453,11 +445,11 @@ def getAutoExp():
         if len(centroids) < 20:
             expAuto = expAuto * 2
             camera.set(expAuto,param["Gain"])
-            capture()
+            np_image = capture()
         elif len(centroids) > 50 and pk > 250:
             expAuto = int((expAuto / 2) * 10)/10
             camera.set(expAuto,param["Gain"])
-            capture()
+            np_image = capture()
         else:
             break
     return (str(expAuto))
@@ -607,6 +599,62 @@ def readConfig():
                 pass
         print(param,len(param))
 
+def read_imu():
+    """Wraps the driver read into an IMUSample with a UTC timestamp.
+    Your Pi's clock is GPS-disciplined to UTC, so datetime.now(timezone.utc)
+    is trustworthy here without any extra correction.
+
+    Also caches the reading (harmless in normal use) so that, in
+    TEST_MODE, the synthetic solver can reuse this exact sample instead
+    of taking its own separate reading -- see test_plate_solver.py's
+    LastSampleCache for why that consistency matters.
+    """
+    sample = _last_imu_cache.update(read_imu_sample(bno))
+
+    if DIAGNOSE_FREEZE:
+        global _diag_last_raw_quat
+        quat = (sample.x, sample.y, sample.z, sample.w)
+        if quat == _diag_last_raw_quat:
+            # Two consecutive reads with the EXACT SAME raw quaternion --
+            # i.e. the driver handed back a stale/cached report rather
+            # than a fresh one since the last call. This would make the
+            # rate check briefly read ~0 deg/s even during real motion --
+            # see the module docstring's "DIAGNOSING..." section.
+            print("  [diag] *** duplicate raw quaternion -- IMU read returned a stale report ***")
+        _diag_last_raw_quat = quat
+
+    return sample
+
+def efinder_plate_solve():
+    """ It should return a plain 4-tuple
+    (ra_deg, dec_deg, roll_deg, solved)
+    """
+    return solveImage(capture())
+
+def read_rig():
+    time.sleep(0.2)  # give the camera a moment to finish its exposure
+    rastr = nexus.get(":GR#").split(":")
+    decstr = re.split(r"[:*]", nexus.get(":GD#"))
+    ra = (float(rastr[0]) + float(rastr[1]) / 60 + float(rastr[2]) / 3600) * 15 # convert to decimal degrees
+    dec = math.copysign(abs(abs(float(decstr[0])) + float(decstr[1]) / 60 + float(decstr[2]) / 3600),float(decstr[0]))
+    Rad = math.pi / 180
+    #alt,az = astro_time.radec_to_altaz(ra, dec, site, datetime.now(timezone.utc))
+    LST = astro_time.lst_hours(astro_time.julian_date(datetime.now(timezone.utc)), Long)
+    LSTd = LST * 15
+    LHA = (LSTd - ra + 360) - ((int)((LSTd - ra + 360) / 360)) * 360
+    x = math.cos(LHA * Rad) * math.cos(dec * Rad)
+    y = math.sin(LHA * Rad) * math.cos(dec * Rad)
+    z = math.sin(dec * Rad)
+    xhor = x * math.cos((90 - Lat) * Rad) - z * math.sin((90 - Lat) * Rad)
+    yhor = y
+    zhor = x * math.sin((90 - Lat) * Rad) + z * math.cos((90 - Lat) * Rad)
+    az = math.atan2(yhor, xhor) * (180 / math.pi) + 180
+    alt = math.asin(zhor) * (180 / math.pi)
+    timestamp = datetime.now(timezone.utc)
+    print ('-------------------------------------')
+    print ("read_rig = RA:%.2f Dec:%.2f Alt:%.2f Az:%.2f datetime:%s" % (ra,dec,alt,az, timestamp.strftime("%Y-%m-%d %H:%M:%S")))
+    return ra, dec, alt, az, timestamp
+
 # main code starts here
 
 with open("/var/www/html/eFinderLiveLog.txt", "w") as h:
@@ -637,13 +685,11 @@ except Exception as error:
     print(str(error))
 
 
-try:
-    camera = RPICamera_Nexus_4.RPICamera()
-    camera.set(float(param["Exposure"]),param["Gain"])
-except Exception as error:
-    logWrite(str(error))
-        
-coordinates = Coordinates_wifi_2.Coordinates()
+pimodel = subprocess.run(["cat","/sys/firmware/devicetree/base/model"],capture_output=True, text=True)
+modelStr = str(pimodel.stdout)
+print('Pi Model is: ',modelStr)
+pwmInvert = 0
+altAngle = "none"
 
 hotspot = True
 try:
@@ -662,27 +708,105 @@ else:
     print('joining infrastructure wifi')
     setWifi('0')
 
-print ('Starting solver')
-solver = olive_solve.FusedSolver(db_path, imu_type="auto")
+try:
+    camera = RPICamera_Nexus_4.RPICamera()
+    camera.set(float(param["Exposure"]),param["Gain"])
+except Exception as error:
+    logWrite(str(error))
 
-print ('Connect SkySafari now')
-wifiloop = Thread(target=serveWifi)
-wifiloop.start()
-led.hardware_PWM(18,10,500000)
-time.sleep(0.5)
-while not lock: # wait for SkySafari to join which sets Lat, Long & Clock
-    time.sleep(.2)
-print ('SkySafari connected OK')
-
-now = datetime.now(timezone.utc)
+cam = (960,760,50.8,13.5)   
 
 pix_x, pix_y = dxdy2pixel(float(param["d_x"])/60, float(param["d_y"])/60)
 offset_str = ('%1.3f,%1.3f' % (float(param["d_x"])/60, float(param["d_y"])/60))
+
 offset = (pix_y, pix_x) 
 
 target_px = np.array([offset], dtype=np.float64)
 print('offset',target_px)
 np_image = np.zeros((760,960),dtype=np.float32)
+
+wifiloop = Thread(target=serveWifi)
+wifiloop.start()
+print ('Waiting for SkySafari to connect')
+led.hardware_PWM(18,10,500000)
+while lock == False:
+    time.sleep(0.2)
+print ('SkySafari connected, starting eFinder Live',Lat,Long)
+
+pwmInvert = 1000000
+
+USE_GAME_ROTATION_VECTOR = True
+DISABLE_DYNAMIC_CALIBRATION = False
+DISABLE_DYNAMIC_CALIBRATION_WARMUP_S = 5.0
+DISABLE_DCD_AUTOSAVE = True
+REPORT_INTERVAL_US = 10000
+
+bno = open_bno085_software_i2c(
+    bus_number=3,
+    use_game_rotation_vector=USE_GAME_ROTATION_VECTOR,
+    disable_dynamic_calibration=DISABLE_DYNAMIC_CALIBRATION,
+    disable_dynamic_calibration_warmup_s=DISABLE_DYNAMIC_CALIBRATION_WARMUP_S,
+    disable_dcd_autosave=DISABLE_DCD_AUTOSAVE,
+    report_interval_us=REPORT_INTERVAL_US,
+)
+print(
+    f"BNO085 ready: GRV={USE_GAME_ROTATION_VECTOR} "
+    f"disable_dynamic_calibration={DISABLE_DYNAMIC_CALIBRATION} "
+    f"(warmup={DISABLE_DYNAMIC_CALIBRATION_WARMUP_S}s) "
+    f"disable_dcd_autosave={DISABLE_DCD_AUTOSAVE} "
+    f"report_interval_us={REPORT_INTERVAL_US}"
+)
+
+site = ObserverLocation(latitude_deg=Lat, longitude_deg=Long, elevation_m=0.0)
+estimator = TelescopePointingEstimator(site, body_boresight=np.array([0.0, 0.0, -1.0]))
+_last_imu_cache = LastSampleCache()  # only actually used in TEST_MODE -- see below
+_diag_last_raw_quat = None  # (x, y, z, w) of the previous read_imu() call, for staleness detection
+_underlying_plate_solve= make_rig_plate_solve(read_rig, site) if testMode else efinder_plate_solve
+print('Running with IMU')
+
+if DIAGNOSE_FREEZE:
+    def plate_solve():
+        """Diagnostic wrapper -- logs every solve ATTEMPT (i.e. every call
+        that got past get_pointing_estimate()'s rate gate) with the rate
+        that let it through and how long the call actually took, so a
+        freeze in the console/SkySafari can be matched, after the fact,
+        against a specific slow solve call. See the module docstring's
+        "DIAGNOSING THE OCCASIONAL FREEZE DURING A SLEW" section."""
+        rate = estimator.angular_rate_deg_s()
+        rate_str = f"{rate:.3f} deg/s" if rate is not None else "unknown (fewer than 2 IMU samples yet)"
+        t_start = time.monotonic()
+        print(f"  [diag] solve ATTEMPT starting -- last measured rate: {rate_str}")
+
+        result = _underlying_plate_solve()
+
+        elapsed = time.monotonic() - t_start
+        solved = result[3]
+        print(f"  [diag] solve ATTEMPT finished in {elapsed:.2f}s -- solved={solved}")
+        if elapsed > 1.0:
+            print(f"  [diag] *** this attempt took {elapsed:.2f}s -- likely cause of a visible freeze ***")
+        return result
+else:
+    plate_solve = _underlying_plate_solve
+
+bg_solver = None
+if args.solver_mode == "background":
+    # Shares the BNO085 I2C bus with the main loop's own IMU reads, so both
+    # sides must go through bg_solver.read_imu_locked() -- see
+    # background_solver.py's module docstring ("A NOTE ON THREAD SAFETY").
+    bg_solver = BackgroundSolver(
+        capture_and_solve=plate_solve,
+        read_imu=read_imu,
+        max_rate_deg_s=MAX_RATE_DEG_S,
+        poll_interval_s=BACKGROUND_SOLVER_POLL_INTERVAL_S,
+    )
+    bg_solver.start()
+    tick_read_imu = bg_solver.read_imu_locked
+else:
+    tick_read_imu = read_imu
+
+now = datetime.now(timezone.utc)
+#print("Pi UTC currently set to: " + now.strftime("%Y-%m-%d %H:%M:%S"))
+
 
 
 led_duty_cycle = int(float(param["LED"])) * 10000
@@ -691,28 +815,62 @@ led.hardware_PWM(18,200,abs(pwmInvert - led_duty_cycle))
 loop = True
 a = True
 
+was_mount_calibrated = False
+
 while True:
+    _tick_start = time.monotonic() if DIAGNOSE_FREEZE else None
+
     if switch.read(17) == 0:
         flipWifi()
+
     if offset_flag == False and loop == True:
         led.hardware_PWM(18,200,a * abs(pwmInvert - led_duty_cycle))
-        if rigMode:
-            print('IMU state',solver.get_motion_state())
-            if solver.get_motion_state() == "Moving":
-                time.sleep(0.1)
-            else:
-                rastr = nexus.get(":GR#").split(':')
-                ra = parse_coordinates(*rastr) * 15.0
-                decstr = re.split(r"[:*]", nexus.get(":GD#"))
-                dec = parse_coordinates(*decstr)
-                alt,az = radec_to_altaz(ra,dec,site,datetime.now(timezone.utc))
-                roll = get_roll(ra,dec,alt,az,datetime.now(timezone.utc),site,0.0)
-                solver.update_position(ra,dec,roll=roll,timestamp=None,pointing_only=False)
-                time.sleep(0.2)
-        else:
-            print(solveImage(capture()))
-            print('****************')
 
+        if bg_solver is not None:
+            # Never blocks on the solver -- just checks whether a new
+            # solve has finished since the last tick. MIN_SETTLE_S is NOT
+            # applied here (see background_solver.py / --solver-mode help).
+            estimate = pointing_loop_tick_nonblocking(estimator, bg_solver, tick_read_imu)
+        else:
+            estimate = get_pointing_estimate(
+                estimator, plate_solve, tick_read_imu,
+                max_rate_deg_s=MAX_RATE_DEG_S, min_settle_s=MIN_SETTLE_S)
+
+        if DIAGNOSE_FREEZE:
+            _tick_elapsed = time.monotonic() - _tick_start
+            if _tick_elapsed > 1.0:
+                # Catches a slow tick for ANY reason, not just a slow solve
+                # attempt (e.g. an I2C hiccup on the IMU read itself) -- the
+                # solve-attempt log above will already explain it if that
+                # was the cause; if this fires with no matching solve-ATTEMPT
+                # line just before it, the cause is elsewhere (e.g. the IMU
+                # read), which narrows things down just as usefully.
+                print(f"  [diag] *** whole tick took {_tick_elapsed:.2f}s ***")
+
+        if estimator.mount_calibrated and not was_mount_calibrated:
+                    print(f"\n*** {estimator.mount_calibration_status.describe()} ***\n")
+                    was_mount_calibrated = True
+                    
+        if estimate is None:
+            # Only happens before the very first successful solve: there's
+            # no offset yet, so an IMU-only estimate isn't possible.
+            print(f"Not yet ready for IMU estimates -- {estimator.mount_calibration_status.describe()}")
+        elif estimate.source == "plate_solve":
+            solved_radec = (estimate.ra_deg, estimate.dec_deg)
+            print(
+                f"[solved]  RA={estimate.ra_deg:.4f}  Dec={estimate.dec_deg:.4f}  "
+                f"roll={estimate.position_angle_deg:.2f} -- {estimator.mount_calibration_status.describe()}"
+            )
+        else:
+            age = f"{estimate.offset_age_s:.1f}s" if estimate.offset_age_s is not None else "?"
+            solved_radec = (estimate.ra_deg, estimate.dec_deg)
+            print(
+                f"[imu]     RA={estimate.ra_deg:.4f}  Dec={estimate.dec_deg:.4f}  "
+                f"(offset age {age}{', STALE' if estimate.is_stale else ''})"
+            )
+
+
+        
         a = not a
 
     time.sleep(0.05) 

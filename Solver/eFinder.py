@@ -356,11 +356,11 @@ def getAutoExp():
         if len(centroids) < 20:
             expAuto = expAuto * 2
             camera.set(expAuto,param["Gain"])
-            capture()
+            np_image = capture()
         elif len(centroids) > 50 and pk > 250:
             expAuto = int((expAuto / 2) * 10)/10
             camera.set(expAuto,param["Gain"])
-            capture()
+            np_image = capture()
         else:
             break
     return (str(expAuto))
