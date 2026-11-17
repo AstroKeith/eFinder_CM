@@ -45,11 +45,13 @@ led.hardware_PWM(18,4,500000)
 switch = pigpio.pi()
 switch.set_mode(17, pigpio.INPUT)
 switch.set_pull_up_down(17, pigpio.PUD_UP)
+buzzer = pigpio.pi()
+
 
 from pathlib import Path
 home_path = str(Path.home())
 
-version = "3.4"
+version = "3.9"
 
 print ('eFinder Live','Version '+ version)
 print ('Loading program')
@@ -57,7 +59,7 @@ import time
 from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps
 import numpy as np
-import RPICamera_Nexus_4
+import Camera_Nexus
 import Coordinates_wifi_2
 import tetra3
 import csv
@@ -243,13 +245,13 @@ def selectExp(e,g):
     save_param()
 
 def pixel2dxdy(pix_x, pix_y):  # converts a pixel position, into a delta angular offset from the image centre
-    deg_x = (float(pix_x) - cam[0]/2) * cam[2] / 3600  # in degrees
-    deg_y = (cam[1]/2 - float(pix_y)) * cam[2] / 3600
+    deg_x = (float(pix_x) - float(cam[0])/2) * float(cam[2]) / 3600  # in degrees
+    deg_y = (float(cam[1])/2 - float(pix_y)) * float(cam[2]) / 3600
     return (deg_x, deg_y)
 
 def dxdy2pixel(dx, dy): # converts offsets in arcseconds to pixel position
-    pix_x = dx * 3600 / cam[2] + cam[0]/2
-    pix_y = cam[1]/2 - dy * 3600 / cam[2]
+    pix_x = dx * 3600 / float(cam[2]) + float(cam[0])/2
+    pix_y = float(cam[1])/2 - dy * 3600 / float(cam[2])
     return (pix_x, pix_y)
 
 def capture():
@@ -287,7 +289,7 @@ def solveImage(img):
     solution = t3.solve_from_centroids(
         centroids,
         (760,960),
-        fov_estimate=13.4, 
+        fov_estimate=float(cam[3]), 
         target_pixel=target_px,
         distortion = 0.0,
         return_matches=True
@@ -343,15 +345,19 @@ def measure_offset():
     if solve == False:
         print ("solve failed")
         offset_flag = False
+        beep(-1)
         return ("fail")
     tempExp = param['Exposure']
+    '''
     while float(peak) > 255:
         tempExp = tempExp * 0.75
         camera.set(tempExp, param["Gain"])
         solveImage(capture())
+    '''
     if solve == False:
         print ("solve failed")
         offset_flag = False
+        beep(-1)
         return ("fail")
     scope_x = firstStar[1]
     scope_y = firstStar[0]
@@ -378,7 +384,15 @@ def measure_offset():
                         secondname = " ("+row[2].strip()+")"
                     break       
     print (name + ', HIP ' + hipId)
+    # d_x/d_y just changed, which shifts the plate-solver's reported RA/Dec
+    # for the SAME physical pointing -- any solve/IMU pairs the mount
+    # calibration fit was built from before this point are now stale and
+    # will corrupt (or at best fight) a fit built from pairs recorded
+    # after it. Clear it and let it recalibrate cleanly on the new offset.
+    estimator.reset_mount_calibration()
+    print("mount calibration reset after boresight alignment -- recalibrating")
     offset_flag = False
+    beep(0.1)
     return(name+secondname+',HIP'+hipId+','+offset_str)
 
 def go_solve():
@@ -394,7 +408,7 @@ def reset_offset():
     global param, offset, offset_str,target_px
     param["d_x"] = 0
     param["d_y"] = 0
-    offset = (cam[1]/2, cam[0]/2) # default centre of the image
+    offset = (float(cam[1])/2, float(cam[0])/2) # default centre of the image
     target_px = np.array([offset], dtype=np.float64)
     offset_str = ('%1.3f,%1.3f' % (float(param["d_x"])/60, float(param["d_y"])/60))
     save_param()
@@ -655,6 +669,24 @@ def read_rig():
     print ("read_rig = RA:%.2f Dec:%.2f Alt:%.2f Az:%.2f datetime:%s" % (ra,dec,alt,az, timestamp.strftime("%Y-%m-%d %H:%M:%S")))
     return ra, dec, alt, az, timestamp
 
+def beep(duration):
+    if duration > 0:
+        buzzer.hardware_PWM(19, 2637, volume)
+        time.sleep(duration * 0.85)
+        buzzer.hardware_PWM(19, 2349, volume)
+        time.sleep(duration * 0.85)
+        buzzer.hardware_PWM(19, 2637, volume)
+        time.sleep(duration * 0.85)
+        buzzer.hardware_PWM(19, 0, 0)
+    else:
+        buzzer.hardware_PWM(19, 2700, 500000)
+        time.sleep(0.1)
+        buzzer.hardware_PWM(19, 0, 0)
+        time.sleep(0.1)
+        buzzer.hardware_PWM(19, 2300, 500000)
+        time.sleep(0.5)
+        buzzer.hardware_PWM(19, 0, 0)
+            
 # main code starts here
 
 with open("/var/www/html/eFinderLiveLog.txt", "w") as h:
@@ -708,13 +740,25 @@ else:
     print('joining infrastructure wifi')
     setWifi('0')
 
-try:
-    camera = RPICamera_Nexus_4.RPICamera()
-    camera.set(float(param["Exposure"]),param["Gain"])
-except Exception as error:
-    logWrite(str(error))
 
-cam = (960,760,50.8,13.5)   
+if param["Camera"].lower() == "rpi":
+    try:
+        camera = Camera_Nexus.Camera("RPI")
+        camera.set(float(param["Exposure"]),param["Gain"])
+        cam = param["Cam"].split(",") 
+    except Exception as error:
+        logWrite(str(error))
+elif param["Camera"].lower() == "imx335":
+    try:
+        camera = Camera_Nexus.Camera("IMX335")
+        camera.set(float(param["Exposure"]),param["Gain"])
+        cam = param["Cam"].split(",")
+    except Exception as error:
+        logWrite(str(error))
+else:
+    logWrite("Camera type not recognised in eFinder.config")
+
+  
 
 pix_x, pix_y = dxdy2pixel(float(param["d_x"])/60, float(param["d_y"])/60)
 offset_str = ('%1.3f,%1.3f' % (float(param["d_x"])/60, float(param["d_y"])/60))
@@ -725,12 +769,17 @@ target_px = np.array([offset], dtype=np.float64)
 print('offset',target_px)
 np_image = np.zeros((760,960),dtype=np.float32)
 
+volume = int(float(param["Volume"])) * 100000
 wifiloop = Thread(target=serveWifi)
 wifiloop.start()
+
+
 print ('Waiting for SkySafari to connect')
 led.hardware_PWM(18,10,500000)
 while lock == False:
-    time.sleep(0.2)
+    beep(0.1)
+    time.sleep(0.5)
+    
 print ('SkySafari connected, starting eFinder Live',Lat,Long)
 
 pwmInvert = 1000000
@@ -824,8 +873,8 @@ while True:
         flipWifi()
 
     if offset_flag == False and loop == True:
-        led.hardware_PWM(18,200,a * abs(pwmInvert - led_duty_cycle))
-
+        led.hardware_PWM(18,200,int(abs((pwmInvert - solve * led_duty_cycle/2) - (a * led_duty_cycle))))
+   
         if bg_solver is not None:
             # Never blocks on the solver -- just checks whether a new
             # solve has finished since the last tick. MIN_SETTLE_S is NOT

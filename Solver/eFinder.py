@@ -22,7 +22,7 @@ led.hardware_PWM(18,1,500000)
 os.system("sudo chmod a+rwx -R /var/www/html/")
 global radec
 fault = ""
-version = "2.1"
+version = "2.2"
 
 if len(sys.argv) > 1:
     print ('Killing running version')
@@ -37,7 +37,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps
 import numpy as np
 import Nexus_usb as NexusUsb
-import RPICamera_Nexus_4
+import Camera_Nexus
 import servocat_usb
 import tetra3
 import csv
@@ -92,13 +92,13 @@ def configRecover():
         logWrite(str(error))
 
 def pixel2dxdy(pix_x, pix_y):  # converts a pixel position, into a delta angular offset from the image centre
-    deg_x = (float(pix_x) - cam[0]/2) * cam[2] / 3600  # in degrees
-    deg_y = (cam[1]/2 - float(pix_y)) * cam[2] / 3600
+    deg_x = (float(pix_x) - float(cam[0])/2) * float(cam[2]) / 3600  # in degrees
+    deg_y = (float(cam[1])/2 - float(pix_y)) * float(cam[2]) / 3600
     return (deg_x, deg_y)
 
 def dxdy2pixel(dx, dy): # converts offsets in arcseconds to pixel position
-    pix_x = dx * 3600 / cam[2] + cam[0]/2
-    pix_y = cam[1]/2 - dy * 3600 / cam[2]
+    pix_x = dx * 3600 / float(cam[2]) + float(cam[0])/2
+    pix_y = float(cam[1])/2 - dy * 3600 / float(cam[2])
     return (pix_x, pix_y)
 
 def capture():
@@ -136,7 +136,7 @@ def solveImage(img):
     solution = t3.solve_from_centroids(
                     centroids,
                     (760,960),
-                    fov_estimate=cam[3],
+                    fov_estimate=float(cam[3]),
                     distortion=0.0,
                     target_pixel=target_px,
                     return_matches=True
@@ -245,7 +245,7 @@ def reset_offset():
     global param, offset, offset_str, target_px
     param["d_x"] = 0
     param["d_y"] = 0
-    offset = (cam[1]/2, cam[0]/2) # default centre of the image
+    offset = (float(cam[1])/2, float(cam[0])/2) # default centre of the image
     target_px = np.array([offset], dtype=np.float64)
     offset_str = ('%1.3f,%1.3f' % (float(param["d_x"])/60, float(param["d_y"])/60))
     save_param()
@@ -541,12 +541,26 @@ except Exception as error:
     logWrite(str(error))
     print(str(error))
 
-try:
-    camera = RPICamera_Nexus_4.RPICamera()
-    camera.set(float(param["Exposure"]),param["Gain"])
-except Exception as error:
+if param["Camera"].lower() == "rpi":
+    try:
+        camera = Camera_Nexus.Camera("RPI")
+        camera.set(float(param["Exposure"]),param["Gain"])
+        cam = param["Cam"].split(",") 
+    except Exception as error:
+        logWrite(str(error))
+        fault = fault + "3"
+elif param["Camera"].lower() == "imx335":
+    try:
+        camera = Camera_Nexus.Camera("IMX335")
+        camera.set(float(param["Exposure"]),param["Gain"])
+        cam = param["Cam"].split(",")
+    except Exception as error:
+        logWrite(str(error))
+        fault = fault + "3"
+else:
+    logWrite("Camera type not recognised in eFinder.config")
     fault = fault + "3"
-    logWrite(str(error))
+
       
 pix_x, pix_y = dxdy2pixel(float(param["d_x"])/60, float(param["d_y"])/60)
 offset_str = ('%1.3f,%1.3f' % (float(param["d_x"])/60, float(param["d_y"])/60))
