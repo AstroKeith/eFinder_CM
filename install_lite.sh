@@ -104,6 +104,7 @@ sudo chmod a+rwx /home/efinder/Solver/images
 sudo cp /home/efinder/eFinder_CM/Solver/index.php /var/www/html
 sudo cp /home/efinder/eFinder_CM/Solver/upload.php /var/www/html
 sudo cp /home/efinder/eFinder_CM/Solver/log.php /var/www/html
+sudo cp /home/efinder/eFinder_CM/Solver/view.php /var/www/html
 sudo cp /home/efinder/eFinder_CM/Solver/updater.html /var/www/html
 sudo cp /home/efinder/eFinder_CM/Solver/user.ini /etc/php/8.2/apache2/conf.d
 sudo cp /home/efinder/eFinder_CM/Solver/user.ini /etc/php/8.2/cli/conf.d
