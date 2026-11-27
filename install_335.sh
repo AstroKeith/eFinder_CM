@@ -1,12 +1,13 @@
 #!/bin/sh
 
 echo "eFinder CM install on Pi CM4"
+echo "Install IMX335 camera drivers"
 echo " "
 
 echo "Nexus usb via CP230x uart and Aux usb host port"
 sudo tee -a /boot/firmware/config.txt > /dev/null <<EOT
 arm_freq=600
-dtoverlay=imx477,cam0
+dtoverlay=imx335,cam0
 dtoverlay=dwc2,dr_mode=host
 dtoverlay=uart3
 enable_uart=1
