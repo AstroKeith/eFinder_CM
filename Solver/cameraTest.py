@@ -62,7 +62,7 @@ args = parser.parse_args()
 camera = Camera_Nexus.Camera("IMX335")
 #camera = Camera_Nexus.Camera("RPI")
 camera.set(args.exp,args.gn)
-print ('Image can be viewed at efinder.local')
+print ('Image can be viewed at "efinder.local/view.php"')
 txt = 'Exp: ' + str(args.exp) + '  Gain: ' + str(args.gn)
 try:
     while True:
