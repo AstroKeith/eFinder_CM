@@ -6,7 +6,7 @@ echo " "
 echo "Nexus usb via CM4 serial_gadget as device on usb"
 sudo tee -a /boot/firmware/config.txt > /dev/null <<EOT
 arm_freq=600
-dtoverlay=imx477,cam0
+dtoverlay=imx335,cam0
 dtoverlay=dwc2,dr_mode=peripheral
 dtoverlay=disable-bt
 dtoverlay=i2c-gpio,i2c_gpio_sda=16,i2c_gpio_scl=20,bus=3
