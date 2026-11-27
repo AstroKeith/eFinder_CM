@@ -7,7 +7,7 @@ echo " "
 echo "Nexus usb via CP230x uart and Aux usb host port"
 sudo tee -a /boot/firmware/config.txt > /dev/null <<EOT
 arm_freq=600
-dtoverlay=imx335,cam0
+dtoverlay=imx477,cam0
 dtoverlay=dwc2,dr_mode=host
 dtoverlay=uart3
 enable_uart=1
@@ -66,16 +66,6 @@ sudo chmod a+rwx /home/efinder/uploads
 
 cp /home/efinder/eFinder_CM/Solver/*.* /home/efinder/Solver
 echo "tmpfs /home/efinder/Solver/images tmpfs nodev,nosuid,size=10M 0 0" | sudo tee -a /etc/fstab > /dev/null
-
-echo " "
-echo "*****************************************************************************"
-echo "Installing IMX335 drivers"
-echo "*****************************************************************************"
-sudo apt install rpicam-apps
-wget -O install_pivariety_pkgs.sh https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/install_script/install_pivariety_pkgs.sh
-chmod +x install_pivariety_pkgs.sh
-./install_pivariety_pkgs.sh -p libcamera_dev
-./install_pivariety_pkgs.sh -p libcamera_apps
 
 cd $HOME
 echo " "
@@ -142,7 +132,7 @@ sudo raspi-config nonint do_ssh 0
 sudo raspi-config nonint do_i2c 0
 sudo raspi-config nonint do_serial_cons 1
 
-sudo python /home/efinder/Solver/configUpdater335.py
+sudo python /home/efinder/Solver/configUpdater.py
 sudo cp newconfig.txt /boot/firmware/config.txt
 
 cd $HOME
